@@ -32,7 +32,17 @@ public static class ImageIO
         {
             throw new VisionException("Görüntü dosyası okunamadı: " + Path.GetFileName(path), ex);
         }
-        return Cv2.ImDecode(bytes, mode);     // bozuk dosyada boş Mat döner
+        // Boş (0 bayt) veya bozuk dosyada OpenCV hata fırlatabiliyor; ikisinde de boş Mat dönüyoruz
+        if (bytes.Length == 0)
+            return new Mat();
+        try
+        {
+            return Cv2.ImDecode(bytes, mode);
+        }
+        catch (Exception ex) when (ex is OpenCVException or OpenCvSharpException)
+        {
+            return new Mat();
+        }
     }
 
     public static void Write(string path, Mat image)
@@ -156,9 +166,12 @@ public sealed class FaceRecognizerService : IDisposable
     /// <summary>Örnek fotoğraflardaki yüzleri bulup kırparak eğitir.</summary>
     public void Train(IEnumerable<(string Label, Mat Image)> samples, FaceDetector detector)
     {
-        var crops = samples.Select(s => (s.Label, ImagePreprocessor.CropFace(s.Image, detector))).ToList();
+        var crops = new List<(string Label, Mat Face)>();
         try
         {
+            // Döngü yarıda hata verirse o ana kadar kırpılanlar da finally'de serbest bırakılıyor
+            foreach (var s in samples)
+                crops.Add((s.Label, ImagePreprocessor.CropFace(s.Image, detector)));
             Train(crops);
         }
         finally
@@ -235,7 +248,8 @@ public sealed class FaceRecognizerService : IDisposable
     public double ToConfidence(double distance, double margin = 20)
     {
         double distanceScore = Math.Clamp(1.0 - distance / (UnknownThreshold * 1.25), 0, 1);
-        double marginScore = Math.Clamp(margin / (MinMargin * 4), 0, 1);
+        // Fark ayarı 0'a çekilince 0/0 = NaN çıkmasın diye ölçek en az 1 alınıyor
+        double marginScore = Math.Clamp(margin / (Math.Max(MinMargin, 1) * 4), 0, 1);
         return Math.Round(100 * (0.5 * distanceScore + 0.5 * marginScore), 1);
     }
 
@@ -256,7 +270,21 @@ public sealed class FaceRecognizerService : IDisposable
         if (!File.Exists(labelFile))
             throw new VisionException($"Model dosyası bulunamadı: {Path.GetFileName(folder)}");
 
-        var names = File.ReadAllLines(labelFile).Where(l => l.Length > 0).ToList();
+        List<string> names;
+        try
+        {
+            names = File.ReadAllLines(labelFile).Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new VisionException("Etiket dosyası okunamadı: " + ex.Message, ex);
+        }
+        // Boş ya da tekrar eden etiketler mevcut modeli bozmasın diye yükleme başlamadan reddediliyor
+        if (names.Count < 2)
+            throw new VisionException("Model dosyasında en az 2 kişi olmalı (etiketler.txt boş veya eksik).");
+        if (names.Distinct(StringComparer.OrdinalIgnoreCase).Count() != names.Count)
+            throw new VisionException("etiketler.txt içinde aynı kişi birden fazla kez geçiyor.");
+
         var yeni = new Dictionary<string, LBPHFaceRecognizer>();
         try
         {
@@ -270,7 +298,7 @@ public sealed class FaceRecognizerService : IDisposable
                 yeni[names[i]] = m;
             }
         }
-        catch (Exception ex) when (ex is OpenCVException or OpenCvSharpException)
+        catch (Exception ex) when (ex is OpenCVException or OpenCvSharpException or IOException or UnauthorizedAccessException)
         {
             foreach (var m in yeni.Values) m.Dispose();
             throw new VisionException("Model dosyası okunamadı (bozuk olabilir).", ex);
@@ -284,6 +312,9 @@ public sealed class FaceRecognizerService : IDisposable
         DisposeModels();
         foreach (var (k, v) in yeni) models[k] = v;
         labels.AddRange(names);
+        // Dosyadan yüklenen modelde örnek sayısı bilinmiyor; eski eğitimin sayıları kalmasın
+        SampleCount = 0;
+        LastTrainingTime = TimeSpan.Zero;
     }
 
     private void DisposeModels()

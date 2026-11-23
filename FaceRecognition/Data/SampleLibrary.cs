@@ -9,6 +9,11 @@ namespace FaceRecognition.Data;
 public sealed class SampleLibrary
 {
     private static readonly string[] Extensions = { ".png", ".jpg", ".jpeg", ".bmp" };
+    private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+    };
 
     public SampleLibrary(string rootFolder)
     {
@@ -39,6 +44,20 @@ public sealed class SampleLibrary
     {
         var samples = new List<(string, Mat)>();
         int skipped = 0;
+        try
+        {
+            ReadAllInto(samples, ref skipped);
+        }
+        catch
+        {
+            foreach (var (_, m) in samples) m.Dispose();
+            throw;
+        }
+        return (samples, skipped);
+    }
+
+    private void ReadAllInto(List<(string, Mat)> samples, ref int skipped)
+    {
         foreach (string label in Labels)
         {
             foreach (string file in FilesOf(label))
@@ -62,8 +81,11 @@ public sealed class SampleLibrary
                 samples.Add((label, img));
             }
         }
-        return (samples, skipped);
     }
+
+    /// <summary>Büyük/küçük harf farkı gözetmeden var olan etiketi bulur (NTFS "Ali" ile "ali"yi aynı klasör sayar).</summary>
+    public string? FindLabel(string label) =>
+        Labels.FirstOrDefault(l => string.Equals(l, label.Trim(), StringComparison.OrdinalIgnoreCase));
 
     public static string? ValidateLabel(string? label)
     {
@@ -73,6 +95,12 @@ public sealed class SampleLibrary
             return "Etiket en fazla 30 karakter olabilir.";
         if (label.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             return "Etikette \\ / : * ? \" < > | karakterleri kullanılamaz.";
+        string t = label.Trim();
+        // "." / ".." üst klasörü gösterir; Windows sondaki noktayı siler ("Ali." -> "Ali")
+        if (t.Trim('.').Length == 0 || t.EndsWith('.'))
+            return "Etiket nokta ile bitemez ve sadece noktadan oluşamaz.";
+        if (ReservedNames.Contains(t.Split('.')[0].Trim()))
+            return $"\"{t}\" Windows'ta ayrılmış bir ad, başka bir etiket seçin.";
         return null;
     }
 

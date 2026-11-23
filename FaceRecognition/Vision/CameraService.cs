@@ -24,6 +24,8 @@ public sealed class CameraService : IDisposable
     {
         if (IsRunning)
             return;
+        // Döngü kendi kendine bittiyse (kamera koptu) eski cihaz tutamacı bırakılıyor
+        Stop();
 
         var cap = new VideoCapture();
         try
@@ -52,6 +54,19 @@ public sealed class CameraService : IDisposable
     }
 
     private void ReadLoop(VideoCapture cap, CancellationToken token)
+    {
+        try
+        {
+            ReadFrames(cap, token);
+        }
+        catch (Exception ex) when (!token.IsCancellationRequested)
+        {
+            // Arka plandaki hata sessizce kaybolmasın: forma bildiriliyor
+            Failed?.Invoke(this, "Kamera görüntüsü işlenirken hata oluştu: " + ex.Message);
+        }
+    }
+
+    private void ReadFrames(VideoCapture cap, CancellationToken token)
     {
         int emptyFrames = 0;
         while (!token.IsCancellationRequested)
@@ -83,7 +98,11 @@ public sealed class CameraService : IDisposable
     public void Stop()
     {
         cts?.Cancel();
-        try { loop?.Wait(1000); } catch (AggregateException) { }
+        // Döngü bitmeden kamerayı bırakmak, okuma sürerken yerel nesneyi serbest bırakmak olur;
+        // bu yüzden döngünün bitmesi bekleniyor (en fazla bir kare okuma + analiz süresi)
+        try { loop?.Wait(); } catch (AggregateException) { }
+        cts?.Dispose();
+        cts = null;
         capture?.Release();
         capture?.Dispose();
         capture = null;

@@ -47,8 +47,10 @@ public partial class TrainingForm : Form
             lstPeople.Items.Add(label);
         lstPeople.EndUpdate();
 
-        if (keep != null && lstPeople.Items.Contains(keep))
-            lstPeople.SelectedItem = keep;
+        // NTFS "Ali" ile "ali"yi aynı klasör sayıyor; arama da büyük/küçük harf duyarsız
+        int index = keep is null ? -1 : lstPeople.FindStringExact(keep);
+        if (index >= 0)
+            lstPeople.SelectedIndex = index;
         else if (lstPeople.Items.Count > 0)
             lstPeople.SelectedIndex = 0;
         else
@@ -111,7 +113,22 @@ public partial class TrainingForm : Form
             Info(error, error: true);
             return false;
         }
-        library.CreateLabel(label);
+        if (library.FindLabel(label) is string existing)
+        {
+            txtNewPerson.Clear();
+            RefreshPeople(existing);
+            Info($"\"{existing}\" zaten var, listede seçildi.", error: false);
+            return false;
+        }
+        try
+        {
+            library.CreateLabel(label);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Info("Kişi klasörü oluşturulamadı: " + ex.Message, error: true);
+            return false;
+        }
         txtNewPerson.Clear();
         RefreshPeople(label.Trim());
         Info($"\"{label.Trim()}\" eklendi. Şimdi bu kişiye örnek fotoğraf ekleyin.", error: false);
@@ -184,12 +201,22 @@ public partial class TrainingForm : Form
 
     private void btnAddFromCurrent_Click(object? sender, EventArgs e)
     {
-        if (SelectedPerson is not string person || currentImage is null || currentMatches.Count == 0) return;
+        if (SelectedPerson is not string person || currentImage is null || currentImage.IsDisposed || currentMatches.Count == 0) return;
 
         // Ekranda birden fazla yüz varsa en büyüğü (kameraya en yakın olan) ekleniyor
         var area = currentMatches.OrderByDescending(m => m.Area.Width * m.Area.Height).First().Area;
-        using var crop = new Mat(currentImage, area);
-        library.AddSample(person, crop);
+        area = area.Intersect(new Rect(0, 0, currentImage.Width, currentImage.Height));
+        if (area.Width <= 0 || area.Height <= 0) return;
+        try
+        {
+            using var crop = new Mat(currentImage, area);
+            library.AddSample(person, crop);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Info("Örnek kaydedilemedi: " + ex.Message, error: true);
+            return;
+        }
         ShowSamples(person);
         Info("Ekrandaki yüz örnek olarak eklendi.", error: false);
     }

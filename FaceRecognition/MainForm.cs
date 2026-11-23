@@ -19,6 +19,9 @@ public partial class MainForm : Form
     private Mat? currentImage;
     private IReadOnlyList<FaceMatch> currentMatches = Array.Empty<FaceMatch>();
     private volatile bool frameBusy;
+    // Kamera her başlatılıp durdurulduğunda artar. Kuyrukta bekleyen eski bir kare,
+    // kamera durduktan sonra ekrandaki resmi (ve eğitim penceresine verilen Mat'i) ezmesin diye.
+    private volatile int cameraSession;
 
     public MainForm()
     {
@@ -27,11 +30,18 @@ public partial class MainForm : Form
         catch (Exception) { /* varsayılan ikon */ }
 
         camera.FrameReady += Camera_FrameReady;
-        camera.Failed += (_, msg) => BeginInvoke(() =>
+        camera.Failed += (_, msg) =>
         {
-            StopCamera();
-            ShowAlert(msg, error: true);
-        });
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    StopCamera();
+                    ShowAlert(msg, error: true);
+                });
+            }
+            catch (InvalidOperationException) { /* form kapanıyor */ }
+        };
 
         toolTip.SetToolTip(trkThreshold, "Yüz, en yakın kişiye bu mesafeden daha uzaksa \"Bilinmeyen\" sayılır. Küçük değer = daha seçici.");
         toolTip.SetToolTip(trkMargin, "En yakın iki kişi arasındaki fark bundan küçükse \"Bilinmeyen\" sayılır. Büyük değer = daha seçici.");
@@ -172,6 +182,7 @@ public partial class MainForm : Form
             return false;
         }
 
+        cameraSession++;
         HideAlert();
         btnCamera.Text = "Kamerayı durdur";
         btnCamera.Kind = ScanButtonKind.Danger;
@@ -182,8 +193,8 @@ public partial class MainForm : Form
 
     private void StopCamera()
     {
-        if (!camera.IsRunning)
-            return;
+        // Kamera kendiliğinden kopmuş olsa bile (IsRunning false) cihaz bırakılıp arayüz sıfırlanıyor
+        cameraSession++;
         camera.Stop();
         btnCamera.Text = "Kamerayı başlat";
         btnCamera.Kind = ScanButtonKind.Primary;
@@ -201,23 +212,45 @@ public partial class MainForm : Form
         }
 
         frameBusy = true;
-        var sw = Stopwatch.StartNew();
+        int session = cameraSession;
         IReadOnlyList<FaceMatch> matches;
-        lock (visionLock)
-            matches = analyzer.Analyze(frame);
-        var elapsed = sw.Elapsed;
+        TimeSpan elapsed;
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            lock (visionLock)
+                matches = analyzer.Analyze(frame);
+            elapsed = sw.Elapsed;
+        }
+        catch
+        {
+            frame.Dispose();
+            frameBusy = false;
+            throw;               // CameraService bunu yakalayıp Failed olayıyla bildiriyor
+        }
 
         try
         {
             BeginInvoke(() =>
             {
-                ShowFrame(frame, matches, elapsed);
-                frameBusy = false;
+                try
+                {
+                    // Kamera bu arada durdurulduysa (görüntü seçildi, eğitim açıldı, form kapanıyor) kare atılıyor
+                    if (session != cameraSession || IsDisposed || !camera.IsRunning)
+                        frame.Dispose();
+                    else
+                        ShowFrame(frame, matches, elapsed);
+                }
+                finally
+                {
+                    frameBusy = false;
+                }
             });
         }
         catch (InvalidOperationException)
         {
             frame.Dispose();     // form kapanıyor
+            frameBusy = false;
         }
     }
 
@@ -327,9 +360,9 @@ public partial class MainForm : Form
 
     private void UpdateModelChip()
     {
-        chipModel.Text = recognizer.IsTrained
-            ? $"Model: {recognizer.Labels.Count} kişi · {recognizer.SampleCount} örnek"
-            : "Model eğitilmedi";
+        chipModel.Text = !recognizer.IsTrained ? "Model eğitilmedi"
+            : recognizer.SampleCount > 0 ? $"Model: {recognizer.Labels.Count} kişi · {recognizer.SampleCount} örnek"
+            : $"Model: {recognizer.Labels.Count} kişi · dosyadan";
         chipModel.Dot = recognizer.IsTrained ? Palette.Accent : Palette.Unknown;
     }
 
@@ -371,6 +404,7 @@ public partial class MainForm : Form
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
+        cameraSession++;
         camera.Dispose();
         lock (visionLock)
         {
