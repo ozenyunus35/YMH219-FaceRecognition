@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FaceRecognition</RootNamespace>
+    <RollForward>Major</RollForward>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- OpenCV'nin .NET sarmalayıcısı; runtime.win Windows için native DLL'leri getiriyor -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Yüz algılama modeli ve örnek veri program klasörüne kopyalanıyor -->
+    <None Update="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Ornekler\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="DenemeGorselleri\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
