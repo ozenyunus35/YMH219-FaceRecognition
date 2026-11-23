@@ -22,12 +22,63 @@ public partial class TrainingForm : Form
                         object visionLock, Mat? currentImage, IReadOnlyList<FaceMatch> currentMatches)
     {
         InitializeComponent();
+        MaximizeBox = false;              // alt butonlar sabit yerleşimli; büyütünce sola yığılıyordu
+        lstPeople.ItemHeight = (int)Math.Round(44 * DeviceDpi / 96.0);   // %125-%150'de iki satır çakışmasın
+        lblSelected.AutoEllipsis = true;
+        lblInfo.AutoEllipsis = true;
+        KeyPreview = true;
+        KeyDown += TrainingForm_KeyDown;
+        txtNewPerson.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                AddPerson(txtNewPerson.Text);
+            }
+        };
+        lstPeople.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Delete && btnDeletePerson.Enabled)
+                btnDeletePerson.PerformClick();
+        };
+        toolTip.SetToolTip(txtNewPerson, "Yeni kişinin etiketi (Enter ile ekle)");
+        toolTip.SetToolTip(lstPeople, "Seçili kişiyi silmek için Delete");
+        toolTip.SetToolTip(btnRetrain, "Örneklerdeki değişiklikler tanımaya ancak yeniden eğitimle yansır");
         this.library = library;
         this.recognizer = recognizer;
         this.detector = detector;
         this.visionLock = visionLock;
         this.currentImage = currentImage;
         this.currentMatches = currentMatches;
+    }
+
+    private readonly ToolTip toolTip = new();
+    private readonly Font personFont = new("Segoe UI Semibold", 10F);
+    private readonly Dictionary<string, int> sampleCounts = new();
+
+    /// <summary>Örnek eklendi/silindi ama model yeniden eğitilmedi.</summary>
+    internal bool NeedsRetrain { get; private set; }
+
+    private void TrainingForm_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape)
+        {
+            e.Handled = true;
+            Close();
+        }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        MainForm.DarkTitleBar(this);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        toolTip.Dispose();
+        personFont.Dispose();
+        base.OnFormClosed(e);
     }
 
     private void TrainingForm_Load(object? sender, EventArgs e)
@@ -43,8 +94,12 @@ public partial class TrainingForm : Form
         string? keep = select ?? SelectedPerson;
         lstPeople.BeginUpdate();
         lstPeople.Items.Clear();
+        sampleCounts.Clear();
         foreach (string label in library.Labels)
+        {
             lstPeople.Items.Add(label);
+            sampleCounts[label] = library.CountOf(label);   // her çizimde diske gitmesin
+        }
         lstPeople.EndUpdate();
 
         // NTFS "Ali" ile "ali"yi aynı klasör sayıyor; arama da büyük/küçük harf duyarsız
@@ -80,6 +135,8 @@ public partial class TrainingForm : Form
         lvSamples.EndUpdate();
 
         lblSelected.Text = person is null ? "Bir kişi seçin" : $"{person}  ·  {lvSamples.Items.Count} örnek";
+        if (person != null)
+            sampleCounts[person] = lvSamples.Items.Count;
         btnAddFromFile.Enabled = person != null;
         btnAddFromCurrent.Enabled = person != null && currentImage != null && currentMatches.Count > 0;
         btnDeletePerson.Enabled = person != null;
@@ -97,9 +154,13 @@ public partial class TrainingForm : Form
             using (var bar = new SolidBrush(Palette.Accent))
                 e.Graphics.FillRectangle(bar, e.Bounds.X, e.Bounds.Y + 8, 3, e.Bounds.Height - 16);
 
-        using var nameFont = new Font("Segoe UI Semibold", 10F);
-        TextRenderer.DrawText(e.Graphics, name, nameFont, new System.Drawing.Point(e.Bounds.X + 12, e.Bounds.Y + 4), Palette.Text);
-        TextRenderer.DrawText(e.Graphics, $"{library.CountOf(name)} örnek", Font, new System.Drawing.Point(e.Bounds.X + 12, e.Bounds.Y + 23), Palette.TextDim);
+        // Uzun adlar sütundan taşmasın: sonu "…" ile kısaltılıyor
+        var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
+        int w = Math.Max(10, e.Bounds.Width - 20);
+        int lineH = e.Bounds.Height / 2;
+        TextRenderer.DrawText(e.Graphics, name, personFont, new Rectangle(e.Bounds.X + 12, e.Bounds.Y + 4, w, lineH), Palette.Text, flags);
+        TextRenderer.DrawText(e.Graphics, $"{sampleCounts.GetValueOrDefault(name)} örnek", Font,
+            new Rectangle(e.Bounds.X + 12, e.Bounds.Y + lineH, w, lineH - 2), Palette.TextDim, flags);
     }
 
     // ---------- Kişi ekle / sil ----------
@@ -145,6 +206,7 @@ public partial class TrainingForm : Form
         try
         {
             library.DeleteLabel(person);
+            NeedsRetrain = true;
             RefreshPeople();
             Info($"\"{person}\" silindi. Değişikliğin tanımaya yansıması için modeli yeniden eğitin.", error: false);
         }
@@ -192,7 +254,8 @@ public partial class TrainingForm : Form
             }
         }
 
-        ShowSamples(person);
+        if (added > 0) NeedsRetrain = true;
+        RefreshPeople(person);     // listede de bu kişi seçili olsun, başlık ile liste aynı kişiyi göstersin
         Info(failed == 0
                 ? $"{added} örnek eklendi. Modeli yeniden eğitmeyi unutmayın."
                 : $"{added} örnek eklendi, {failed} dosya okunamadı.", error: failed > 0 && added == 0);
@@ -211,6 +274,7 @@ public partial class TrainingForm : Form
         {
             using var crop = new Mat(currentImage, area);
             library.AddSample(person, crop);
+            NeedsRetrain = true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -241,6 +305,7 @@ public partial class TrainingForm : Form
                 foreach (var s in samples) s.Face.Dispose();
             }
             ShowModelInfo(skipped);
+            NeedsRetrain = false;
             return true;
         }
         catch (VisionException ex)
@@ -302,6 +367,7 @@ public partial class TrainingForm : Form
             lock (visionLock)
                 recognizer.Load(folder);
             Info($"Model yüklendi: {recognizer.Labels.Count} kişi ({string.Join(", ", recognizer.Labels)})", error: false);
+            NeedsRetrain = false;
             return true;
         }
         catch (VisionException ex)
@@ -315,6 +381,7 @@ public partial class TrainingForm : Form
     private void Info(string text, bool error)
     {
         lblInfo.Text = (error ? "⚠  " : "✓  ") + text;
+        toolTip.SetToolTip(lblInfo, text);
         lblInfo.ForeColor = error ? Palette.Unknown : Palette.Accent;
     }
 }

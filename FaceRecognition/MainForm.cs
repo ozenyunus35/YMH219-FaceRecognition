@@ -43,9 +43,72 @@ public partial class MainForm : Form
             catch (InvalidOperationException) { /* form kapanıyor */ }
         };
 
-        toolTip.SetToolTip(trkThreshold, "Yüz, en yakın kişiye bu mesafeden daha uzaksa \"Bilinmeyen\" sayılır. Küçük değer = daha seçici.");
-        toolTip.SetToolTip(trkMargin, "En yakın iki kişi arasındaki fark bundan küçükse \"Bilinmeyen\" sayılır. Büyük değer = daha seçici.");
+        toolTip.SetToolTip(trkThreshold, "Yüz, en yakın kişiye bu mesafeden daha uzaksa \"Bilinmeyen\" sayılır. Küçük değer = daha seçici.\nÇift tıkla: varsayılan (125)");
+        toolTip.SetToolTip(trkMargin, "En yakın iki kişi arasındaki fark bundan küçükse \"Bilinmeyen\" sayılır. Büyük değer = daha seçici.\nÇift tıkla: varsayılan (6)");
+        toolTip.SetToolTip(btnCamera, "Kamerayı başlat / durdur");
+        toolTip.SetToolTip(btnImage, "Bilgisayardan bir fotoğraf seç");
+        toolTip.SetToolTip(btnSample, "Hazır grup fotoğrafıyla hemen dene");
+        toolTip.SetToolTip(btnTraining, "Kişi ekle/sil, örnek fotoğraf ekle, modeli eğit");
+        toolTip.SetToolTip(lstResults, "Bir satıra tıklayınca o yüz resimde vurgulanır");
+
+        // Listeden seçilen yüz resimde, resimde tıklanan yüz listede vurgulanıyor
+        lstResults.EmptyText = "Henüz yüz yok.\nBir görüntü seçin veya kamerayı başlatın.";
+        lstResults.SelectedIndexChanged += (_, _) => picView.HighlightIndex = lstResults.SelectedIndex;
+        picView.FaceClicked += (_, i) => { if (i < lstResults.Items.Count) lstResults.SelectedIndex = i; };
+
+        // Kaydırıcı sürüklenirken her adımda analiz yapılıp arayüz takılmasın: kısa bir gecikmeyle bir kez
+        sensitivityDelay.Tick += (_, _) => { sensitivityDelay.Stop(); ReanalyzeCurrent(); };
+        trkThreshold.DoubleClick += (_, _) => trkThreshold.Value = 125;
+        trkMargin.DoubleClick += (_, _) => trkMargin.Value = 6;
+
+        alertTimer.Tick += (_, _) => { alertTimer.Stop(); HideAlert(); };
+        lblAlert.AutoEllipsis = true;
+
+        // Kartın genişliği ölçeklemeyle değişse de "Eğitim" butonu kartın dışına taşmasın
+        pnlActions.Resize += (_, _) => YerlesimiAyarla();
+        KeyPreview = true;
+        KeyDown += MainForm_KeyDown;
         toolTip.SetToolTip(btnSaveFaces, "Ekrandaki yüzleri ayrı ayrı .png dosyası olarak bir klasöre kaydeder");
+    }
+
+    private readonly System.Windows.Forms.Timer sensitivityDelay = new() { Interval = 150 };
+    private readonly System.Windows.Forms.Timer alertTimer = new() { Interval = 6000 };
+    private readonly Stopwatch listUpdate = Stopwatch.StartNew();
+
+    private void YerlesimiAyarla()
+    {
+        int gap = 8, w = (pnlActions.ClientSize.Width - gap) / 2;
+        btnSaveFaces.SetBounds(0, btnSaveFaces.Top, w, btnSaveFaces.Height);
+        btnTraining.SetBounds(w + gap, btnTraining.Top, pnlActions.ClientSize.Width - w - gap, btnTraining.Height);
+    }
+
+    private void MainForm_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape && pnlAlert.Visible)
+        {
+            HideAlert();
+            e.Handled = true;
+        }
+    }
+
+    // Koyu temaya uygun koyu başlık çubuğu (Windows 10 20H1+ / 11)
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    internal static void DarkTitleBar(Form f)
+    {
+        try
+        {
+            int on = 1;
+            DwmSetWindowAttribute(f.Handle, 20, ref on, sizeof(int));
+        }
+        catch (Exception) { /* eski Windows: varsayılan başlık */ }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        DarkTitleBar(this);
     }
 
     // ===================== Açılış =====================
@@ -150,6 +213,7 @@ public partial class MainForm : Form
         }
 
         HideAlert();
+        lstResults.ClearSelected();      // yeni görüntüde önceki seçim anlamsız
         var sw = Stopwatch.StartNew();
         IReadOnlyList<FaceMatch> matches;
         lock (visionLock)
@@ -171,6 +235,11 @@ public partial class MainForm : Form
     internal bool StartCamera()
     {
         if (analyzer is null) return false;
+        // Kamera açılması birkaç saniye sürebiliyor: buton kapatılıp kullanıcıya söyleniyor (çift tıklama da engelleniyor)
+        btnCamera.Enabled = false;
+        lblSourceInfo.Text = "Kamera açılıyor…";
+        UseWaitCursor = true;
+        Refresh();
         try
         {
             camera.Start(0);
@@ -178,8 +247,14 @@ public partial class MainForm : Form
         catch (VisionException ex)
         {
             ShowAlert(ex.Message, error: true);
+            lblSourceInfo.Text = currentImage is null ? "" : lblSourceInfo.Text;
             UpdateSourceChip();
             return false;
+        }
+        finally
+        {
+            btnCamera.Enabled = true;
+            UseWaitCursor = false;
         }
 
         cameraSession++;
@@ -266,18 +341,30 @@ public partial class MainForm : Form
         currentImage = image;
         currentMatches = matches;
 
-        lstResults.SetItems(matches.Select(m =>
+        // Kamera açıkken liste saniyede 4 kezden fazla yenilenmesin (titreme ve kaydırma sıçraması olmasın)
+        bool updateList = !camera.IsRunning || listUpdate.ElapsedMilliseconds > 250 || lstResults.Items.Count != matches.Count;
+        if (updateList)
         {
-            using var crop = new Mat(image, m.Area);
-            using var small = crop.Resize(new OpenCvSharp.Size(88, 88));
-            return new FaceResultList.Item(small.ToBitmap(), m);
-        }).ToList());
+            listUpdate.Restart();
+            UpdateResultList(image, matches);
+        }
 
         int known = matches.Count(m => m.IsKnown);
         lblStatus.Text = matches.Count == 0
             ? $"Yüz bulunamadı  ·  {image.Width}x{image.Height}  ·  {elapsed.TotalMilliseconds:0} ms"
             : $"{matches.Count} yüz bulundu  ·  {known} tanındı  ·  {matches.Count - known} bilinmeyen  ·  {elapsed.TotalMilliseconds:0} ms";
         btnSaveFaces.Enabled = matches.Count > 0;
+    }
+
+    private void UpdateResultList(Mat image, IReadOnlyList<FaceMatch> matches)
+    {
+        lstResults.SetItems(matches.Select(m =>
+        {
+            using var crop = new Mat(image, m.Area);
+            using var small = crop.Resize(new OpenCvSharp.Size(88, 88));
+            return new FaceResultList.Item(small.ToBitmap(), m);
+        }).ToList());
+        picView.HighlightIndex = lstResults.SelectedIndex;
     }
 
     // ===================== Hassasiyet =====================
@@ -290,13 +377,14 @@ public partial class MainForm : Form
             recognizer.MinMargin = trkMargin.Value;
         }
         UpdateSensitivityLabels();
-        ReanalyzeCurrent();
+        sensitivityDelay.Stop();
+        sensitivityDelay.Start();
     }
 
     private void UpdateSensitivityLabels()
     {
-        lblThreshold.Text = $"En fazla mesafe: {trkThreshold.Value}";
-        lblMargin.Text = $"Ayırt etme farkı: {trkMargin.Value}";
+        lblThreshold.Text = $"En fazla mesafe: {trkThreshold.Value}" + (trkThreshold.Value == 125 ? "  (varsayılan)" : "");
+        lblMargin.Text = $"Ayırt etme farkı: {trkMargin.Value}" + (trkMargin.Value == 6 ? "  (varsayılan)" : "");
     }
 
     /// <summary>Kamera kapalıyken ekrandaki görüntüyü yeni ayarlarla tekrar analiz eder.</summary>
@@ -346,10 +434,20 @@ public partial class MainForm : Form
         bool wasRunning = camera.IsRunning;
         StopCamera();
 
+        bool needsRetrain;
         using (var form = new TrainingForm(library, recognizer, detector, visionLock, currentImage, currentMatches))
+        {
             form.ShowDialog(this);
+            needsRetrain = form.NeedsRetrain;
+        }
 
         UpdateModelChip();
+        if (needsRetrain)
+        {
+            // Örnekler değişti ama model yeniden eğitilmedi: ekrandaki sonuçlar eski modele göre
+            chipModel.Text = "Model: yeniden eğitim gerekli";
+            chipModel.Dot = Palette.Unknown;
+        }
         if (wasRunning)
             StartCamera();
         else
@@ -388,8 +486,13 @@ public partial class MainForm : Form
     private void ShowAlert(string message, bool error)
     {
         lblAlert.Text = (error ? "⚠  " : "✓  ") + message;
+        toolTip.SetToolTip(lblAlert, message);
         pnlAlert.BackColor = error ? Color.FromArgb(78, 28, 40) : Color.FromArgb(16, 70, 52);
         pnlAlert.Visible = true;
+        // Başarı mesajları kendiliğinden kapanıyor, hatalar kullanıcı kapatana (✕ veya Esc) kadar kalıyor
+        alertTimer.Stop();
+        if (!error)
+            alertTimer.Start();
     }
 
     private void HideAlert() => pnlAlert.Visible = false;
@@ -404,6 +507,8 @@ public partial class MainForm : Form
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
+        sensitivityDelay.Dispose();
+        alertTimer.Dispose();
         cameraSession++;
         camera.Dispose();
         lock (visionLock)

@@ -112,6 +112,13 @@ Visual Studio: `YMH219-FaceRecognition.sln` → <kbd>F5</kbd>.
 3. **Kamerayı başlat** ile canlı görüntüde yüz algılama yapın.
 4. **Eğitim / örnekler** penceresinden yeni bir kişi ekleyip fotoğraflarını yükleyin ve **Modeli yeniden eğit**'e basın.
 
+**Kullanım ipuçları:**
+- Sağdaki listede bir yüze tıklayınca o yüz resimde vurgulanır; resimdeki bir yüze tıklamak da listede seçer.
+- Hassasiyet kaydırıcılarına çift tıklamak varsayılan değere (125 / 6) döndürür.
+- Hata mesajları ✕ veya `Esc` ile kapanır; başarı mesajları birkaç saniye sonra kendiliğinden kapanır.
+- Eğitim penceresinde yeni kişi kutusunda `Enter` kişiyi ekler, listede `Delete` seçili kişiyi (onay sorarak) siler, `Esc` pencereyi kapatır.
+- Örnekler değişip model yeniden eğitilmediyse ana pencerede "yeniden eğitim gerekli" uyarısı görünür.
+
 ## Veri seti, etik ve gizlilik
 
 - Gerçek kişilerden izinsiz fotoğraf **kullanılmadı**. Örnekler, yüz tanıma eğitiminde standart olan, gönüllülerden

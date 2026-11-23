@@ -52,8 +52,10 @@ public class ScanButton : Button
         FlatAppearance.BorderSize = 0;
         Font = new Font("Segoe UI Semibold", 9.5F);
         Cursor = Cursors.Hand;
-        TabStop = false;
     }
+
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 
     [Category("Appearance")]
     [DefaultValue(ScanButtonKind.Secondary)]
@@ -91,7 +93,15 @@ public class ScanButton : Button
             g.DrawPath(p, path);
         }
         TextRenderer.DrawText(g, Text, Font, ClientRectangle, text,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+        // Tab ile gelindiğinde odak çerçevesi
+        if (Focused && ShowFocusCues)
+        {
+            using var focus = new Pen(Palette.Text, 1.5f) { DashStyle = DashStyle.Dot };
+            using var inner = Palette.Rounded(RectangleF.Inflate(r, -3, -3), 5);
+            g.DrawPath(focus, inner);
+        }
     }
 }
 
@@ -205,7 +215,52 @@ public class AnalysisPictureBox : PictureBox
     public IReadOnlyList<FaceMatch> Matches
     {
         get => matches;
-        set { matches = value ?? Array.Empty<FaceMatch>(); Invalidate(); }
+        set
+        {
+            matches = value ?? Array.Empty<FaceMatch>();
+            if (highlightIndex >= matches.Count) highlightIndex = -1;
+            Invalidate();
+        }
+    }
+
+    private int highlightIndex = -1;
+
+    /// <summary>Listede seçilen yüz; resimde kalın çerçeveyle gösteriliyor.</summary>
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int HighlightIndex
+    {
+        get => highlightIndex;
+        set { highlightIndex = value; Invalidate(); }
+    }
+
+    /// <summary>Resimdeki bir yüze tıklandı (indeks).</summary>
+    public event EventHandler<int>? FaceClicked;
+
+    private RectangleF FaceRect(FaceMatch m, RectangleF ir, float scale) =>
+        new(ir.X + m.Area.X * scale, ir.Y + m.Area.Y * scale, m.Area.Width * scale, m.Area.Height * scale);
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (Image is null) return;
+        RectangleF ir = ImageRect();
+        float scale = ir.Width / Image.Width;
+        for (int i = 0; i < matches.Count; i++)
+            if (FaceRect(matches[i], ir, scale).Contains(e.Location))
+            {
+                FaceClicked?.Invoke(this, i);
+                return;
+            }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (Image is null) { Cursor = Cursors.Default; return; }
+        RectangleF ir = ImageRect();
+        float scale = ir.Width / Image.Width;
+        Cursor = matches.Any(m => FaceRect(m, ir, scale).Contains(e.Location)) ? Cursors.Hand : Cursors.Default;
     }
 
     /// <summary>Görüntünün kontrol içinde çizildiği alan (Zoom modunda kenarlarda boşluk kalıyor).</summary>
@@ -231,26 +286,41 @@ public class AnalysisPictureBox : PictureBox
 
         RectangleF ir = ImageRect();
         float scale = ir.Width / Image.Width;
+        var usedTags = new List<RectangleF>();
 
-        foreach (var m in matches)
+        if (matches.Count == 0 && ShowNoFaceHint)
+            DrawNoFaceHint(g, ir);
+
+        for (int i = 0; i < matches.Count; i++)
         {
-            var r = new RectangleF(ir.X + m.Area.X * scale, ir.Y + m.Area.Y * scale, m.Area.Width * scale, m.Area.Height * scale);
+            var m = matches[i];
+            var r = FaceRect(m, ir, scale);
             Color c = m.IsKnown ? Palette.Accent : Palette.Unknown;
-            DrawBrackets(g, r, c);
+            DrawBrackets(g, r, c, i == highlightIndex);
 
             string text = m.IsKnown ? $"{m.Label}  ·  %{m.Confidence:0}" : m.Label;
-            Size ts = TextRenderer.MeasureText(text, labelFont);
-            var tag = new RectangleF(r.X, Math.Max(ir.Y, r.Y - ts.Height - 10), ts.Width + 14, ts.Height + 6);
+            Size ts = TextRenderer.MeasureText(text, labelFont, Size.Empty, TextFormatFlags.NoPrefix);
+            float tw = ts.Width + 14, th = ts.Height + 6;
+            // Etiket yüzün üstünde; yer yoksa çerçevenin içine, sağ/alt kenardan da taşmasın
+            float ty = r.Y - th - 4;
+            if (ty < ir.Y) ty = Math.Min(r.Y + 4, ir.Bottom - th);
+            float tx = Math.Clamp(r.X, ir.X, Math.Max(ir.X, ir.Right - tw));
+            var tag = new RectangleF(tx, ty, tw, th);
+            // Yakın yüzlerin etiketleri üst üste binmesin
+            for (int guard = 0; guard < 8 && usedTags.Any(u => u.IntersectsWith(tag)); guard++)
+                tag.Y = Math.Min(tag.Y + th + 2, ir.Bottom - th);
+            usedTags.Add(tag);
+
             using (var path = Palette.Rounded(tag, 5))
             using (var b = new SolidBrush(Color.FromArgb(225, c)))
                 g.FillPath(b, path);
             TextRenderer.DrawText(g, text, labelFont, Rectangle.Round(tag), Color.FromArgb(10, 20, 16),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
 
             if (m.IsKnown)
             {
-                // güven çubuğu (çerçevenin altında)
-                var bar = new RectangleF(r.X, r.Bottom + 6, r.Width, 4);
+                // güven çubuğu (çerçevenin altında, resmin dışına taşmadan)
+                var bar = new RectangleF(r.X, Math.Min(r.Bottom + 6, ir.Bottom - 5), r.Width, 4);
                 using var bg = new SolidBrush(Color.FromArgb(120, 0, 0, 0));
                 using var fg = new SolidBrush(c);
                 g.FillRectangle(bg, bar);
@@ -259,10 +329,29 @@ public class AnalysisPictureBox : PictureBox
         }
     }
 
-    private static void DrawBrackets(Graphics g, RectangleF r, Color c)
+    /// <summary>Görüntü var ama yüz yoksa resmin altında kısa bir açıklama.</summary>
+    [DefaultValue(true)]
+    public bool ShowNoFaceHint { get; set; } = true;
+
+    private void DrawNoFaceHint(Graphics g, RectangleF ir)
+    {
+        const string text = "Yüz bulunamadı · daha aydınlık ve kameraya dönük bir görüntü deneyin";
+        Size ts = TextRenderer.MeasureText(text, emptySmall, Size.Empty, TextFormatFlags.NoPrefix);
+        var pill = new RectangleF(ir.X + (ir.Width - ts.Width - 24) / 2, ir.Bottom - ts.Height - 22, ts.Width + 24, ts.Height + 10);
+        using (var path = Palette.Rounded(pill, pill.Height / 2))
+        using (var b = new SolidBrush(Color.FromArgb(210, 12, 18, 24)))
+            g.FillPath(b, path);
+        TextRenderer.DrawText(g, text, emptySmall, Rectangle.Round(pill), Palette.Unknown,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    private static void DrawBrackets(Graphics g, RectangleF r, Color c, bool highlighted = false)
     {
         float len = Math.Max(10, Math.Min(r.Width, r.Height) * 0.22f);
-        using var pen = new Pen(c, 3) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        if (highlighted)
+            using (var glow = new Pen(Color.FromArgb(110, Color.White), 7))
+                g.DrawRectangle(glow, r.X - 4, r.Y - 4, r.Width + 8, r.Height + 8);
+        using var pen = new Pen(c, highlighted ? 5 : 3) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         using var thin = new Pen(Color.FromArgb(70, c), 1);
         g.DrawRectangle(thin, r.X, r.Y, r.Width, r.Height);
         // dört köşe
@@ -318,18 +407,53 @@ public class FaceResultList : ListBox
         BorderStyle = BorderStyle.None;
         BackColor = Palette.Panel;
         IntegralHeight = false;
-        SelectionMode = SelectionMode.None;
+        SelectionMode = SelectionMode.One;
+    }
+
+    /// <summary>Liste boşken ortada gösterilen yazı.</summary>
+    [DefaultValue("")]
+    public string EmptyText { get; set; } = "";
+
+    private int S(int v) => (int)Math.Round(v * DeviceDpi / 96.0);
+
+    // ItemHeight form ölçeklemesiyle büyümüyor; %125-%150'de satırlar üst üste binmesin
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ItemHeight = S(54);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        const int WM_PAINT = 0x000F;
+        if (m.Msg == WM_PAINT && Items.Count == 0 && EmptyText.Length > 0)
+        {
+            using var g = CreateGraphics();
+            TextRenderer.DrawText(g, EmptyText, Font, ClientRectangle, Palette.TextDim,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    protected override void OnSelectedIndexChanged(EventArgs e)
+    {
+        base.OnSelectedIndexChanged(e);
+        Invalidate();
     }
 
     public void SetItems(IEnumerable<Item> items)
     {
         foreach (var old in Items.OfType<Item>())
             old.Thumbnail.Dispose();
+        int keep = SelectedIndex;
         BeginUpdate();
         Items.Clear();
         foreach (var i in items)
             Items.Add(i);
+        if (keep >= 0 && keep < Items.Count)
+            SelectedIndex = keep;
         EndUpdate();
+        Invalidate();
     }
 
     protected override void OnDrawItem(DrawItemEventArgs e)
@@ -339,25 +463,31 @@ public class FaceResultList : ListBox
 
         Graphics g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var bg = new SolidBrush(BackColor))
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+        using (var bg = new SolidBrush(selected ? Palette.PanelLight : BackColor))
             g.FillRectangle(bg, e.Bounds);
 
         var m = item.Match;
         Color c = m.IsKnown ? Palette.Accent : Palette.Unknown;
-        var thumb = new Rectangle(e.Bounds.X + 2, e.Bounds.Y + 5, 44, 44);
+        if (selected)
+            using (var mark = new SolidBrush(c))
+                g.FillRectangle(mark, e.Bounds.X, e.Bounds.Y + S(6), S(3), e.Bounds.Height - S(12));
+        var thumb = new Rectangle(e.Bounds.X + S(6), e.Bounds.Y + S(5), S(44), S(44));
         g.DrawImage(item.Thumbnail, thumb);
         using (var p = new Pen(c, 2))
             g.DrawRectangle(p, thumb);
 
-        int x = thumb.Right + 10;
-        TextRenderer.DrawText(g, m.Label, nameFont, new Point(x, e.Bounds.Y + 6), m.IsKnown ? Palette.Text : Palette.Unknown);
+        int x = thumb.Right + S(10);
+        int w = Math.Max(10, e.Bounds.Right - x - S(8));
+        var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
+        TextRenderer.DrawText(g, m.Label, nameFont, new Rectangle(x, e.Bounds.Y + S(6), w, S(20)), m.IsKnown ? Palette.Text : Palette.Unknown, flags);
 
         string detail = double.IsNaN(m.Distance) ? "model eğitilmedi"
             : m.IsKnown ? $"güven %{m.Confidence:0}  ·  mesafe {m.Distance:0}"
             : $"en yakın: {m.ClosestLabel}  ·  mesafe {m.Distance:0}";
-        TextRenderer.DrawText(g, detail, smallFont, new Point(x, e.Bounds.Y + 25), Palette.TextDim);
+        TextRenderer.DrawText(g, detail, smallFont, new Rectangle(x, e.Bounds.Y + S(26), w, S(16)), Palette.TextDim, flags);
 
-        var bar = new Rectangle(x, e.Bounds.Y + 42, e.Bounds.Width - x - 8, 4);
+        var bar = new Rectangle(x, e.Bounds.Y + S(44), w, Math.Max(3, S(4)));
         using (var b1 = new SolidBrush(Palette.PanelLight)) g.FillRectangle(b1, bar);
         using (var b2 = new SolidBrush(c)) g.FillRectangle(b2, bar.X, bar.Y, (int)(bar.Width * m.Confidence / 100.0), bar.Height);
     }

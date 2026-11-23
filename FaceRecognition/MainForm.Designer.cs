@@ -145,7 +145,6 @@ partial class MainForm
         btnAlertClose.Name = "btnAlertClose";
         btnAlertClose.Size = new Size(30, 28);
         btnAlertClose.TabIndex = 1;
-        btnAlertClose.TabStop = false;
         btnAlertClose.Text = "✕";
         btnAlertClose.Click += btnAlertClose_Click;
         //
@@ -219,7 +218,6 @@ partial class MainForm
         trkMargin.Name = "trkMargin";
         trkMargin.Size = new Size(294, 26);
         trkMargin.TabIndex = 3;
-        trkMargin.TabStop = false;
         trkMargin.TickStyle = TickStyle.None;
         trkMargin.Value = 6;
         trkMargin.ValueChanged += sensitivity_ValueChanged;
@@ -244,7 +242,6 @@ partial class MainForm
         trkThreshold.Name = "trkThreshold";
         trkThreshold.Size = new Size(294, 26);
         trkThreshold.TabIndex = 1;
-        trkThreshold.TabStop = false;
         trkThreshold.TickStyle = TickStyle.None;
         trkThreshold.Value = 125;
         trkThreshold.ValueChanged += sensitivity_ValueChanged;
