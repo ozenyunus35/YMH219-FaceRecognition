@@ -13,7 +13,7 @@ Kameradan veya dosyadan alınan görüntüde **yüzleri bulan** (Haar cascade), 
 
 ---
 
-## Hızlı bakış
+## Özellikler
 
 | Föydeki madde | Durum | Nerede? |
 |---|:-:|---|
@@ -29,6 +29,16 @@ Kameradan veya dosyadan alınan görüntüde **yüzleri bulan** (Haar cascade), 
 
 **Ekstralar:** "Bilinmeyen" kişi tespiti, canlı hassasiyet ayarı, modeli kaydet/yükle, Türkçe karakterli dosya yolu desteği,
 42 otomatik test ve yabancı yüz değerlendirmesi.
+
+## Kullanılan teknolojiler
+
+| | |
+|---|---|
+| Dil / platform | C# 13, **.NET 10**, **Windows Forms** (Visual Studio çözümü) |
+| Görüntü işleme | **OpenCvSharp4** 4.13 (NuGet): `OpenCvSharp4`, `OpenCvSharp4.runtime.win`, `OpenCvSharp4.Extensions` |
+| Algılama / tanıma | Haar cascade (`haarcascade_frontalface_default.xml`) + kişi başı `LBPHFaceRecognizer` |
+| Veri | ORL / Olivetti araştırma veri seti (4 gönüllü × 8 örnek, ayrıntı: [VERI_SETI.md](VERI_SETI.md)) |
+| Test | xUnit 2.9 (algılama, tanıma, kayıt/yükleme, 72 fotoğraflık değerlendirme) |
 
 ## Ekran görüntüleri
 
@@ -143,3 +153,7 @@ geçersiz etiket, bozuk dosya atlama), yüz kırpıp kaydetme, kamera yoksa anla
 - LBPH basit bir yöntem; ışık, açı ve gözlük gibi farklar sonucu etkiler. Küçük örnek kümesinde yabancı yüz ayırt etme ~%67.
 - Haar cascade yalnızca **önden** bakan yüzleri iyi bulur; yan profil algılanmayabilir.
 - Uygulama Windows Forms ve OpenCV'nin Windows paketini kullandığı için **Windows 64 bit** üzerinde çalışır.
+
+## Öğrenci
+
+**Yunus Emre Özen** · 215542001 · YMH219 Nesne Tabanlı Programlama
